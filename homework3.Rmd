@@ -1,0 +1,279 @@
+---
+title: "Homework 3 PSTAT 131/231"
+author: "Mohana Nukala"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      code_folding: show
+---
+
+```{r setup, include=FALSE}
+library(corrplot)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(klaR) # for naive bayes
+library(knitr)
+library(MASS)
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library("dplyr")
+library("yardstick")
+tidymodels_prefer()
+titanic <- read_csv("titanic.csv")
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+## Classification
+
+For this assignment, we will be working with part of a [Kaggle data set](https://www.kaggle.com/c/titanic/overview) that was the subject of a machine learning competition and is often used for practicing ML models. The goal is classification; specifically, to predict which passengers would survive the [Titanic shipwreck](https://en.wikipedia.org/wiki/Titanic).
+
+![Fig. 1: RMS Titanic departing Southampton on April 10, 1912.](images/RMS_Titanic.jpg){width="363"}
+
+Load the data from `data/titanic.csv` into *R* and familiarize yourself with the variables it contains using the codebook (`data/titanic_codebook.txt`).
+
+Notice that `survived` and `pclass` should be changed to factors. When changing `survived` to a factor, you may want to reorder the factor so that *"Yes"* is the first level.
+```{r}
+
+titanic$survived <- as.factor(titanic$survived)
+titanic$survived <- relevel(titanic$survived, "Yes")
+titanic$pclass <- as.factor(titanic$pclass)
+titanic
+```
+
+Make sure you load the `tidyverse` and `tidymodels`!
+
+*Remember that you'll need to set a seed at the beginning of the document to reproduce your results.*
+
+### Question 1
+
+Split the data, stratifying on the outcome variable, `survived.`  You should choose the proportions to split the data into. Verify that the training and testing data sets have the appropriate number of observations. Take a look at the training data and note any potential issues, such as missing data.
+```{r}
+set.seed(1234)
+
+titanic_split <- initial_split(titanic, prop = 0.70, strata = survived)
+titanic_train <- training(titanic_split)
+titanic_test <- testing(titanic_split)
+
+#verifying
+titanic_rows <- nrow(titanic) 
+train_rows <- nrow(titanic_train)
+test_rows <- nrow(titanic_test)
+missing_train <- colSums(is.na(titanic_train))
+train_rows / titanic_rows
+test_rows / titanic_rows
+
+titanic_train
+```
+
+In the above output, we can see we performed the 70/30 data split correctly as the proportions are 0.6992144
+and 0.3007856 which are the correct dimensions.
+
+Why is it a good idea to use stratified sampling for this data?
+
+- We use stratified sampling for this data because we are trying to understand the correlation of survived or not survived and we can divide the data into subgroups to better understand the relationship of survived or not survived. 
+
+### Question 2
+
+Using the **training** data set, explore/describe the distribution of the outcome variable `survived`.
+```{r}
+titanic_train %>%
+  ggplot(aes(x = survived)) +
+  geom_bar()
+titanic_train %>%
+  ggplot(aes(x = survived)) + 
+  geom_boxplot()
+```
+
+
+From the observations, we can see that most people did not survive the titanic.Only about 240 survives while 380 did not.
+
+### Question 3
+
+Using the **training** data set, create a correlation matrix of all continuous variables. Create a visualization of the matrix, and describe any patterns you see. Are any predictors correlated with each other? Which ones, and in which direction?
+```{r}
+correlation_titanic <- titanic_train %>%
+  select(is.numeric) %>%
+  correlate() %>%
+  stretch() %>%
+  ggplot(aes(x, y, fill = r)) + geom_tile() +
+  geom_tile(color = "black") +
+  scale_fill_gradient(low = "white", high = "red") +
+  geom_text(aes(label = as.character(fashion(r))))
+correlation_titanic
+```
+
+
+There doesn't look like there is much correlation between them. Only significant one that is positicely corelated is the sib_sp and parch which has to do with sibling/spouse and parent/children.
+
+### Question 4
+
+Using the **training** data, create a recipe predicting the outcome variable `survived`. Include the following predictors: ticket class, sex, age, number of siblings or spouses aboard, number of parents or children aboard, and passenger fare.
+
+Recall that there were missing values for `age`. To deal with this, add an imputation step using `step_impute_linear()`. Next, use `step_dummy()` to **dummy** encode categorical predictors. Finally, include interactions between:
+
+-   Sex and passenger fare, and
+-   Age and passenger fare.
+```{r}
+titanic_recipe <- 
+  recipe(survived ~ pclass + sex + age + 
+           sib_sp + parch + fare, data = titanic_train) %>%
+  step_impute_linear(age, impute_with = imp_vars(all_predictors())) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_interact(terms = ~sex_male:fare) %>% 
+  step_interact(terms = ~age:fare)
+titanic_recipe 
+```
+
+You'll need to investigate the `tidymodels` documentation to find the appropriate step functions to use.
+
+### Question 5
+
+Specify a **logistic regression** model for classification using the `"glm"` engine. Then create a workflow. Add your model and the appropriate recipe. Finally, use `fit()` to apply your workflow to the **training** data.
+
+***Hint: Make sure to store the results of `fit()`. You'll need them later on.***
+```{r}
+titanic_logistic <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+titanic_logistic_wkflow <- workflow() %>% 
+  add_model(titanic_logistic) %>% 
+  add_recipe(titanic_recipe)
+
+titanic_logistic_fit <- fit(titanic_logistic_wkflow, titanic_train)
+```
+
+### Question 6
+
+**Repeat Question 5**, but this time specify a linear discriminant analysis model for classification using the `"MASS"` engine.
+```{r}
+titanic_lda <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+titanic_lda_wkflow <- workflow() %>% 
+  add_model(titanic_lda) %>% 
+  add_recipe(titanic_recipe)
+
+titanic_lda_fit <- fit(titanic_lda_wkflow, titanic_train)
+```
+
+### Question 7
+
+**Repeat Question 5**, but this time specify a quadratic discriminant analysis model for classification using the `"MASS"` engine.
+```{r}
+titanic_qda <- discrim_quad() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+titanic_qda_wkflow <- workflow() %>% 
+  add_model(titanic_lda) %>% 
+  add_recipe(titanic_recipe)
+
+titanic_qda_fit <- fit(titanic_qda_wkflow, titanic_train)
+```
+
+### Question 8
+
+**Repeat Question 5**, but this time specify a naive Bayes model for classification using the `"klaR"` engine. Set the `usekernel` argument to `FALSE`.
+```{r}
+titanic_nb <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+
+titanic_nb_wkflow <- workflow() %>% 
+  add_model(titanic_nb) %>% 
+  add_recipe(titanic_recipe)
+
+titanic_nb_fit <- fit(titanic_nb_wkflow, titanic_train)
+```
+
+### Question 9
+
+Now you've fit four different models to your training data.
+
+Use `predict()` and `bind_cols()` to generate predictions using each of these 4 models and your **training** data. Then use the *accuracy* metric to assess the performance of each of the four models.
+```{r}
+titanic_log_reg_pred <- predict(titanic_logistic_fit, 
+                           new_data = titanic_train)
+titanic_lda_pred <- predict(titanic_lda_fit, 
+                           new_data = titanic_train)
+titanic_qda_pred <- predict(titanic_qda_fit, 
+                           new_data = titanic_train)
+titanic_nb_pred <- predict(titanic_nb_fit, 
+                           new_data = titanic_train)
+titanic_train_pred <- bind_cols(titanic_log_reg_pred, 
+                                titanic_lda_pred,
+                                titanic_qda_pred,
+                                titanic_nb_pred,
+                                titanic_train$survived)
+
+titanic_train_pred
+
+titanic_log_reg_acc <- augment(titanic_logistic_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+titanic_lda_acc <- augment(titanic_lda_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+titanic_qda_acc <- augment(titanic_qda_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+titanic_nb_acc <- augment(titanic_nb_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+
+titanic_accuracies <- c(titanic_log_reg_acc$.estimate, 
+                        titanic_lda_acc$.estimate, 
+                        titanic_qda_acc$.estimate,
+                        titanic_nb_acc$.estimate)
+titanic_accuracies
+
+```
+
+Which model achieved the highest accuracy on the training data?
+
+The Logistic Regression model had the highest accuracy of 0.8218.
+
+
+### Question 10
+
+Fit the model with the highest training accuracy to the **testing** data. Report the accuracy of the model on the **testing** data.
+
+Again using the **testing** data, create a confusion matrix and visualize it. Plot an ROC curve and calculate the area under it (AUC).
+
+How did the model perform? Compare its training and testing accuracies. If the values differ, why do you think this is so?
+```{r}
+titanic_test_pred <- predict(titanic_logistic_fit, 
+                             new_data = titanic_test, 
+                             type = "prob") %>%
+  bind_cols(titanic_test %>% select(survived))
+titanic_matrix <- augment(titanic_logistic_fit, new_data = titanic_test) %>%
+  conf_mat(truth = survived, estimate = .pred_class) 
+titanic_test_acc <- augment(titanic_logistic_fit, new_data = titanic_test) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+titanic_roc_plot <- augment(titanic_logistic_fit, new_data = titanic_test) %>%
+  roc_curve(survived, .pred_Yes) %>%
+  autoplot()
+
+titanic_test_pred
+
+titanic_test_pred
+titanic_matrix
+
+titanic_roc_plot
+titanic_roc_auc <- titanic_test_pred %>%
+  roc_auc(survived, .pred_Yes)
+
+```
+```{r}
+titanic_roc_auc$.estimate
+titanic_log_reg_acc$.estimate
+titanic_test_acc$.estimate
+```
+
+
+If we compare between the different estimates, we can see that our model performed well. Since the model is performing on a larger training set, we can see that training model has a higher accuracy. Overall, the logistic regression model performed great and it can predit survival on titanic accurately 80% of the time.
+ 
